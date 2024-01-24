@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 
-#TODO 
-# If the python is cancelled in the middle of everything, can we write the current status of the report?
-# Or maybe we're just updating the report every time??? Need to be able to stop & start in the middle
-# save output of exiftool to the report
-
-
 import os
 import re
 import shutil
@@ -314,6 +308,7 @@ def rename_file_based_on_datetime(file_path, modification_info, error_renaming_d
         return None
 
 def process_directory(directory, report_number):
+    report_timestamp = datetime.now().strftime(desired_datetime_format)
     sidecar_directory = ensure_sidecar_directory_exists(directory)
     error_renaming_directory = os.path.join(directory, "error-renaming")
     processed_sidecars_directory = os.path.join(directory, "processed-sidecars")
@@ -345,6 +340,7 @@ def process_directory(directory, report_number):
                 file_path = rename_file_based_on_datetime(file_path, modification_info, error_renaming_directory, error_renaming_files, processed_sidecars_directory, sidecar_path, success_directory)
                 if file_path is None:
                     # File renaming failed, move to the next file
+                    write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
                     continue
 
                 if extension not in extension_modifications:
@@ -354,15 +350,17 @@ def process_directory(directory, report_number):
                 files_examined += 1
                 if files_examined % report_number == 0:
                     print(f"{files_examined} files examined.")
+                write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
         else:
             missing_files.append(file_path)
             shutil.move(file_path, os.path.join(sidecar_directory, file))
+            write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
 
     return missing_files, error_files, error_renaming_files, extension_modifications
 
 
-def write_report(directory, missing_files, error_files, error_renaming_files, extension_modifications):
-    timestamp = datetime.now().strftime(desired_datetime_format)
+def write_report(timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications):
+    # timestamp = datetime.now().strftime(desired_datetime_format)
     report_filename = f"report_{timestamp}.json"
     report_path = os.path.join(directory, report_filename)
 
@@ -418,7 +416,7 @@ if __name__ == "__main__":
     directory = sys.argv[1]
     report_number = 10
     missing_files, error_files, error_renaming_files, extension_modifications = process_directory(directory, report_number)
-    report_path = write_report(directory, missing_files, error_files, error_renaming_files, extension_modifications)
+    # report_path = write_report(directory, missing_files, error_files, error_renaming_files, extension_modifications)
     print_report(missing_files, error_files, error_renaming_files, extension_modifications)
 
 
