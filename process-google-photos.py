@@ -8,7 +8,7 @@ import json
 import subprocess
 from datetime import datetime, timedelta
 import pytz
-from timezonefinder import TimezoneFinder  # Import the TimezoneFinder class
+from timezonefinder import TimezoneFinder
 import pdb
 from pprint import pprint
 
@@ -108,10 +108,12 @@ def determine_timezone(latitude, longitude):
         print(f"Error determining timezone: {e}")
         return None
 
-def get_original_created_date(file_path, metadata):
+def get_original_created_date(file_path, metadata, modification_info):
+    exiftool_output = ""
     try:
         exiftool_command = ['exiftool', '-CreateDate', '-DateTimeOriginal', '-DateCreated', file_path]
         result = subprocess.run(exiftool_command, capture_output=True, text=True, check=True)
+        modification_info['exiftool-output'] += (result.stdout.replace("\n", "").strip() + ";")
 
         # Parse the output to extract the original created date
         exif_output = result.stdout.strip().split('\n')
@@ -131,10 +133,12 @@ def get_original_created_date(file_path, metadata):
         return None
 
     except subprocess.CalledProcessError as e:
+        modification_info['exiftool-output'] += str(e).replace("\n", "").strip() + ";"
         print(f"Error extracting created date from {file_path}: {e}")
         return None
 
 def update_exif_data_with_exiftool(file_path, metadata, error_directory, error_files):
+    exiftool_output = ""  # Initialize an empty string to store exiftool outputs
     try:
         filename = os.path.basename(file_path)
         extension = os.path.splitext(file_path)[1].strip('.').upper()
@@ -149,16 +153,18 @@ def update_exif_data_with_exiftool(file_path, metadata, error_directory, error_f
             'sidecar_created_datetime': None,  # Default value for sidecar created datetime
             'timezone': None,  # Default value for timezone
             'dst': None,  # Default value for daylight savings
-            'sidecar_calculated_datetime': None  # Calculated datetime based on timezone & dst
+            'sidecar_calculated_datetime': None,  # Calculated datetime based on timezone & dst
+            'exiftool-output': ''  # To capture exiftool command outputs
         }
 
-        created_datetime = get_original_created_date(file_path, metadata)
+        created_datetime = get_original_created_date(file_path, metadata, modification_info)
         if created_datetime:
             modification_info['created_datetime'] = created_datetime
 
         read_description_command = ['exiftool', '-Description', file_path]
         result = subprocess.run(read_description_command, capture_output=True, text=True, check=True)
         existing_description = result.stdout.strip()
+        exiftool_output += result.stdout.replace("\n", "").strip() + ";"
 
         new_description = {'original_filename': filename}
 
@@ -214,20 +220,25 @@ def update_exif_data_with_exiftool(file_path, metadata, error_directory, error_f
             except (ValueError, KeyError, TypeError):
                 pass
 
-        exiftool_commands.append(file_path)
-        subprocess.run(exiftool_commands, check=True)
+        if exiftool_commands:
+            exiftool_commands.append(file_path)
+            result = subprocess.run(exiftool_commands, capture_output=True, text=True, check=True)
+            exiftool_output += result.stdout.replace("\n", "").strip() + ";"
+
+        # Assign the captured output to modification_info
+        modification_info['exiftool-output'] = exiftool_output
 
         return extension, modification_info
 
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+        modification_info['exiftool-output'] += str(e).replace("\n", "").strip() + ";"
         print(f"Error updating metadata for {file_path}: {e}")
         if not os.path.exists(error_directory):
             os.makedirs(error_directory)
         error_file_path = os.path.join(error_directory, os.path.basename(file_path))
-        error_files.append(file_path)
+        error_files.append(modification_info)
         shutil.move(file_path, error_file_path)
         return None, None
-
 
 def change_system_file_datetime(file_path, modification_info):
     try:
@@ -245,7 +256,6 @@ def change_system_file_datetime(file_path, modification_info):
         print(f"Error in change_system_file_datetime for {file_path}: {e}")
 
     return modification_info
-
 
 def rename_file_based_on_datetime(file_path, modification_info, error_renaming_directory, error_renaming_files, processed_sidecars_directory, sidecar_path, success_directory):
     try:
@@ -303,7 +313,7 @@ def rename_file_based_on_datetime(file_path, modification_info, error_renaming_d
         if not os.path.exists(error_renaming_directory):
             os.makedirs(error_renaming_directory)
         error_file_path = os.path.join(error_renaming_directory, os.path.basename(file_path))
-        error_renaming_files.append(file_path)
+        error_renaming_files.append(modification_info)
         shutil.move(file_path, error_file_path)
         return None
 
@@ -349,7 +359,7 @@ def process_directory(directory, report_number):
 
                 files_examined += 1
                 if files_examined % report_number == 0:
-                    print(f"{files_examined} files examined.")
+                    print_report(missing_files, error_files, error_renaming_files, extension_modifications)
                 write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
         else:
             missing_files.append(file_path)
@@ -370,7 +380,7 @@ def write_report(timestamp, directory, missing_files, error_files, error_renamin
             return o.strftime("%Y-%m-%d %H:%M:%S")
 
     report_data = {
-        "run-datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "run-datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "error-missing-sidecars": {
             "total": len(missing_files),
             "filelist": missing_files
@@ -392,7 +402,7 @@ def write_report(timestamp, directory, missing_files, error_files, error_renamin
     return report_path
 
 def print_report(missing_files, error_files, error_renaming_files, extension_modifications):
-    print("\n\nCOMPLETE\n")
+    print("")
     modification_counts = {}
     modification_counts['missing-sidecar'] = len(missing_files)
     modification_counts['error_files'] = len(error_files)
@@ -400,13 +410,13 @@ def print_report(missing_files, error_files, error_renaming_files, extension_mod
     for extension, modifications in extension_modifications.items():
         modification_counts[extension] = len(modifications)
 
-
-    total = 0
+    success_count = 0
     for ext, count in modification_counts.items():
-        total += count
+        success_count += count
         pprint({ext: count})
 
-    print("\nTotal Success:", total, "\n\n")
+    fail_count = len(missing_files)+len(error_files)+len(error_renaming_files)
+    print(f"\n{success_count + fail_count} files processed ({success_count} success, {fail_count} fail)\n")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -417,6 +427,6 @@ if __name__ == "__main__":
     report_number = 10
     missing_files, error_files, error_renaming_files, extension_modifications = process_directory(directory, report_number)
     # report_path = write_report(directory, missing_files, error_files, error_renaming_files, extension_modifications)
+    print(f"\n\nCOMPLETE: {directory}\n\n")
     print_report(missing_files, error_files, error_renaming_files, extension_modifications)
-
 
