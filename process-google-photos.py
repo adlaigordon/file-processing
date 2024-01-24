@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
 
+#########################################################################
+# File      process-google-photos.py                                    #
+# Author    Adlai Gordon                                                #
+# Purpose   Process a directory from Google Photos Takeout              #
+#             Repopulate metadata from json sidecars                    #
+#             Modify file created date to best guess match original     #
+#             Handle "Live Photos" (TODO)                               #
+# Dependencies                                                          #
+#           exiftool, pytz, and more (check imports)                    #
+#########################################################################
+
 import os
 import re
 import shutil
