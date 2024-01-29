@@ -299,43 +299,101 @@ def rename_file_based_on_datetime(file_path, modification_info, error_renaming_d
         shutil.move(file_path, error_file_path)
         return None
 
-def create_matched_files(file_list):
+# def create_matched_file_list(file_list):
+#     matched_files = {}
+#     json_files = {}
+
+#     # Segregate JSON files and other files
+#     for file in file_list:
+#         if file.startswith('.'):  # Skip system files
+#             continue
+
+#         base_name, extension = os.path.splitext(file)
+#         if extension.lower() == '.json':
+#             # Adjust the regex to accommodate an additional character before the extension
+#             match = re.match(r'^(.*?)([A-Za-z]?)\.json$', base_name)
+#             if match:
+#                 base_name, additional_char = match.groups()
+#                 base_name_with_char = base_name + additional_char
+#                 # Store both the base name and the base name with the additional character
+#                 json_files[base_name] = json_files.get(base_name, []) + [file]
+#                 if additional_char:
+#                     json_files[base_name_with_char] = json_files.get(base_name_with_char, []) + [file]
+#         else:
+#             if base_name not in matched_files:
+#                 matched_files[base_name] = {'img': [], 'json': []}
+
+#             matched_files[base_name]['img'].append(file)
+
+#     # Match JSON files to their corresponding image or live photo files
+#     for base_name, file_group in matched_files.items():
+#         json_files_matched = json_files.get(base_name, [])
+#         if json_files_matched:
+#             file_group['json'] = json_files_matched[0]  # Assign the first matched JSON file
+
+#     return matched_files
+
+
+def create_matched_file_list(file_list):
     matched_files = {}
-    json_files = {}
+    json_file_list = []
 
-    # Segregate JSON files and other files
+    # Loop through the file list
     for file in file_list:
-        base_name, extension = os.path.splitext(file)
-        if extension.lower() == '.json':
-            # Adjust the regex to accommodate an additional character before the extension
-            match = re.match(r'^(.*?)([A-Za-z]?)\.json$', base_name)
-            if match:
-                base_name, additional_char = match.groups()
-                base_name_with_char = base_name + additional_char
-                # Store both the base name and the base name with the additional character
-                json_files[base_name] = json_files.get(base_name, []) + [file]
-                if additional_char:
-                    json_files[base_name_with_char] = json_files.get(base_name_with_char, []) + [file]
-        else:
-            if base_name not in matched_files:
-                matched_files[base_name] = {'img': [], 'json': []}
+        if file.startswith('.'):  # Skip system files like .DS_Store
+            continue
 
+        base_name, extension = os.path.splitext(file)
+
+        # Handle JSON files
+        if extension.lower() == '.json':
+            json_file_list.append(file)
+        else:
+            # Initialize the dictionary for this base_name if it doesn't exist
+            if base_name not in matched_files:
+                matched_files[base_name] = {'img': [], 'json': None}
+            # Add the image file to the list under its base_name
             matched_files[base_name]['img'].append(file)
 
-    # Match JSON files to their corresponding image or live photo files
-    for base_name, file_group in matched_files.items():
-        json_files_matched = json_files.get(base_name, [])
-        if json_files_matched:
-            file_group['json'] = json_files_matched[0]  # Assign the first matched JSON file
+
+    # Combine keys that are off by one letter at the end and longer than 10 characters
+    keys_to_combine = [(key, key[:-1]) for key in matched_files if len(key) > 10 and key[:-1] in matched_files]
+    for long_key, short_key in keys_to_combine:
+        matched_files[short_key]['img'].extend(matched_files[long_key]['img'])
+        del matched_files[long_key]  # Remove the longer key entry
+
+    for json_file in json_file_list:
+        
+        possible_matches = []
+        partial_name = os.path.splitext(json_file)[0] # img123.json -> img123
+        possible_matches.append(partial_name)
+
+        # Check and extract the parenthetical component # img123.jpg(1).json -> (1)
+        parenthetical_match = re.search(r'\(\d+\)$', partial_name)
+        parenthetical = parenthetical_match.group(0) if parenthetical_match else None
+
+        base_name = os.path.splitext(partial_name)[0] # img123.jpg.json -> img123
+
+        if parenthetical:
+            possible_matches.append(f"{base_name}{parenthetical}")
+        else:
+            possible_matches.append(f"{base_name}")
+
+        # Loop through possible matches
+        for possible_match in possible_matches:
+            if possible_match in matched_files:
+                matched_files[possible_match]['json'] = json_file
 
     return matched_files
 
 
+
+
 def process_directory(directory, report_number):
     report_timestamp = datetime.now().strftime(desired_datetime_format)
-    sidecar_directory = os.path.join(directory, "error-missing-sidecar")
-    error_renaming_directory = os.path.join(directory, "error-renaming")
+    os.makedirs(sidecar_directory := os.path.join(directory, "error-missing-sidecar"), exist_ok=True)
     processed_sidecars_directory = os.path.join(directory, "processed-sidecars")
+    error_renaming_directory = os.path.join(directory, "error-renaming")
     error_directory = os.path.join(directory, "processing-errors")
     success_directory = os.path.join(directory, "successfully-processed")
     missing_files = []
@@ -345,7 +403,8 @@ def process_directory(directory, report_number):
     extension_modifications = {}  # To group modifications by file extension
 
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-    matched_files = create_matched_files(files)
+    breakpoint()
+    matched_files = create_matched_file_list(files)
 
     for base_name, file_group in matched_files.items():
         json_sidecar_path = None
@@ -353,32 +412,40 @@ def process_directory(directory, report_number):
             json_sidecar_path = os.path.join(directory, file_group['json'])
             sidecar_metadata = read_sidecar_json(json_sidecar_path)
         else:
-            # If no JSON, add to missing and continue to next group
             for img_file in file_group['img']:
                 file_path = os.path.join(directory, img_file)
                 missing_files.append(file_path)
                 shutil.move(file_path, os.path.join(sidecar_directory, img_file))
             continue
 
+        modification_info_list = []
         for img_file in file_group['img']:
             file_path = os.path.join(directory, img_file)
 
             extension, modification_info = update_exif_data_with_exiftool(file_path, sidecar_metadata, error_directory, error_files)
 
-            if extension and modification_info:
-                file_path = rename_file_based_on_datetime(file_path, modification_info, error_renaming_directory, error_renaming_files, processed_sidecars_directory, json_sidecar_path, success_directory)
+            if modification_info:
+                modification_info_list.append(modification_info)
+                if len(file_group['img']) > 1:
+                    # Group under "MULTIPLE/LIVE" if more than one image in the group
+                    extension = "MULTIPLE/LIVE"
+                    if extension not in extension_modifications:
+                        extension_modifications[extension] = {}
+                    if base_name not in extension_modifications[extension]:
+                        extension_modifications[extension][base_name] = []
+                    extension_modifications[extension][base_name].append(modification_info)
+                else:
+                    if extension not in extension_modifications:
+                        extension_modifications[extension] = []
+                    extension_modifications[extension].append(modification_info)
+
                 if file_path is None:
-                    # File renaming failed, continue to the next image file
                     continue
 
-                if extension not in extension_modifications:
-                    extension_modifications[extension] = []
-                extension_modifications[extension].append(modification_info)
-
-            files_examined += 1
-            if files_examined % report_number == 0:
-                print_report(missing_files, error_files, error_renaming_files, extension_modifications)
-            write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
+        files_examined += len(file_group['img'])  # Increment by the number of images in the group
+        if files_examined % report_number == 0:
+            print_report(missing_files, error_files, error_renaming_files, extension_modifications)
+        write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
 
     return missing_files, error_files, error_renaming_files, extension_modifications
 
