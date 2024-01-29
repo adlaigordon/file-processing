@@ -8,7 +8,7 @@
 #             Modify file created date to best guess match original     #
 #             Handle "Live Photos" (TODO)                               #
 # Dependencies                                                          #
-#           exiftool, pytz, and more (check imports)                    #
+#           exiftool, pytz, python-dateutil, and more (check imports)                    #
 #########################################################################
 
 import os
@@ -18,6 +18,7 @@ import sys
 import json
 import subprocess
 from datetime import datetime, timedelta
+from dateutil import parser
 import pytz
 from timezonefinder import TimezoneFinder
 import pdb
@@ -71,36 +72,6 @@ def is_daylight_savings_time(dt):
     
     return False
 
-def ensure_sidecar_directory_exists(directory):
-    sidecar_directory = os.path.join(directory, "error-missing-sidecar")
-    if not os.path.exists(sidecar_directory):
-        os.makedirs(sidecar_directory)
-    return sidecar_directory
-
-def has_matching_sidecar(root, file):
-    if file.lower().endswith('.json'):
-        return None  # JSON files don't need sidecars
-
-    file_without_extension, extension = os.path.splitext(file)
-    possible_sidecar_names = [
-        f"{file_without_extension}.json",
-        f"{file_without_extension}{extension}.json",
-    ]
-
-    # Check for sidecars in the format NAME(NUMBER).EXTENSION.json
-    match = re.match(r'^(.*?)(\(\d+\))$', file_without_extension)
-    if match:
-        base_name, number = match.groups()
-        possible_sidecar_names.append(f"{base_name}{extension}{number}.json")
-
-    for possible_name in possible_sidecar_names:
-        json_sidecar = os.path.join(root, possible_name)
-        if os.path.exists(json_sidecar):
-            return json_sidecar  # Return the path of the matching sidecar
-
-    return None  # No matching sidecar found
-
-
 def read_sidecar_json(file_path):
     with open(file_path, 'r') as file:
         return json.load(file)
@@ -122,7 +93,7 @@ def determine_timezone(latitude, longitude):
 def get_original_created_date(file_path, metadata, modification_info):
     exiftool_output = ""
     try:
-        exiftool_command = ['exiftool', '-CreateDate', '-DateTimeOriginal', '-DateCreated', file_path]
+        exiftool_command = ['exiftool', '-CreationDate', '-CreateDate', '-DateTimeOriginal', '-DateCreated', file_path]
         result = subprocess.run(exiftool_command, capture_output=True, text=True, check=True)
         modification_info['exiftool-output'] += (result.stdout.replace("\n", "").strip() + ";")
 
@@ -131,11 +102,11 @@ def get_original_created_date(file_path, metadata, modification_info):
         for line in exif_output:
             if ': ' in line:
                 tag, value = line.split(': ', 1)
-                if tag.lower().strip() in ['create date', 'date/time original', 'date created']:
+                if tag.lower().strip() in ['creation date', 'create date', 'date/time original', 'date created']:
                     created_datetime_str = value.strip()
 
-                    # Convert to datetime object
-                    dt_obj = datetime.strptime(created_datetime_str, '%Y:%m:%d %H:%M:%S')
+                    # Use dateutil.parser to parse datetime with timezone
+                    dt_obj = parser.parse(created_datetime_str)
 
                     # Format datetime object back to string in the desired format
                     formatted_datetime_str = dt_obj.strftime(desired_datetime_format)
@@ -328,9 +299,41 @@ def rename_file_based_on_datetime(file_path, modification_info, error_renaming_d
         shutil.move(file_path, error_file_path)
         return None
 
+def create_matched_files(file_list):
+    matched_files = {}
+    json_files = {}
+
+    # Segregate JSON files and other files
+    for file in file_list:
+        base_name, extension = os.path.splitext(file)
+        if extension.lower() == '.json':
+            # Adjust the regex to accommodate an additional character before the extension
+            match = re.match(r'^(.*?)([A-Za-z]?)\.json$', base_name)
+            if match:
+                base_name, additional_char = match.groups()
+                base_name_with_char = base_name + additional_char
+                # Store both the base name and the base name with the additional character
+                json_files[base_name] = json_files.get(base_name, []) + [file]
+                if additional_char:
+                    json_files[base_name_with_char] = json_files.get(base_name_with_char, []) + [file]
+        else:
+            if base_name not in matched_files:
+                matched_files[base_name] = {'img': [], 'json': []}
+
+            matched_files[base_name]['img'].append(file)
+
+    # Match JSON files to their corresponding image or live photo files
+    for base_name, file_group in matched_files.items():
+        json_files_matched = json_files.get(base_name, [])
+        if json_files_matched:
+            file_group['json'] = json_files_matched[0]  # Assign the first matched JSON file
+
+    return matched_files
+
+
 def process_directory(directory, report_number):
     report_timestamp = datetime.now().strftime(desired_datetime_format)
-    sidecar_directory = ensure_sidecar_directory_exists(directory)
+    sidecar_directory = os.path.join(directory, "error-missing-sidecar")
     error_renaming_directory = os.path.join(directory, "error-renaming")
     processed_sidecars_directory = os.path.join(directory, "processed-sidecars")
     error_directory = os.path.join(directory, "processing-errors")
@@ -342,39 +345,39 @@ def process_directory(directory, report_number):
     extension_modifications = {}  # To group modifications by file extension
 
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
+    matched_files = create_matched_files(files)
 
-    for file in files:
-        file_path = os.path.join(directory, file)
-
-        # Skip if it's not an image or video file or if it's a JSON file
-        if file == '.DS_Store' or file.lower().endswith('.json'):
+    for base_name, file_group in matched_files.items():
+        json_sidecar_path = None
+        if file_group['json']:
+            json_sidecar_path = os.path.join(directory, file_group['json'])
+            sidecar_metadata = read_sidecar_json(json_sidecar_path)
+        else:
+            # If no JSON, add to missing and continue to next group
+            for img_file in file_group['img']:
+                file_path = os.path.join(directory, img_file)
+                missing_files.append(file_path)
+                shutil.move(file_path, os.path.join(sidecar_directory, img_file))
             continue
 
-        sidecar_path = has_matching_sidecar(directory, file)
-
-        if sidecar_path:
-            sidecar_metadata = read_sidecar_json(sidecar_path)
+        for img_file in file_group['img']:
+            file_path = os.path.join(directory, img_file)
 
             extension, modification_info = update_exif_data_with_exiftool(file_path, sidecar_metadata, error_directory, error_files)
 
             if extension and modification_info:
-                file_path = rename_file_based_on_datetime(file_path, modification_info, error_renaming_directory, error_renaming_files, processed_sidecars_directory, sidecar_path, success_directory)
+                file_path = rename_file_based_on_datetime(file_path, modification_info, error_renaming_directory, error_renaming_files, processed_sidecars_directory, json_sidecar_path, success_directory)
                 if file_path is None:
-                    # File renaming failed, move to the next file
-                    write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
+                    # File renaming failed, continue to the next image file
                     continue
 
                 if extension not in extension_modifications:
                     extension_modifications[extension] = []
                 extension_modifications[extension].append(modification_info)
 
-                files_examined += 1
-                if files_examined % report_number == 0:
-                    print_report(missing_files, error_files, error_renaming_files, extension_modifications)
-                write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
-        else:
-            missing_files.append(file_path)
-            shutil.move(file_path, os.path.join(sidecar_directory, file))
+            files_examined += 1
+            if files_examined % report_number == 0:
+                print_report(missing_files, error_files, error_renaming_files, extension_modifications)
             write_report(report_timestamp, directory, missing_files, error_files, error_renaming_files, extension_modifications)
 
     return missing_files, error_files, error_renaming_files, extension_modifications
