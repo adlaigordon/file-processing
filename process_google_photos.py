@@ -106,6 +106,9 @@ def get_original_created_date(file_path, metadata, modification_info):
                 if tag.lower().strip() in ['creation date', 'create date', 'date/time original', 'date created']:
                     created_datetime_str = value.strip()
 
+                    # Remove timezone information using regex
+                    created_datetime_str = re.sub(r' [+-]\d{2}:\d{2}$', '', created_datetime_str)
+
                     # Use dateutil.parser to parse datetime with timezone
                     dt_obj = datetime.strptime(created_datetime_str, '%Y:%m:%d %H:%M:%S')
 
@@ -114,7 +117,7 @@ def get_original_created_date(file_path, metadata, modification_info):
                     return formatted_datetime_str
         return None
 
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         modification_info['exiftool-output'] += str(e).replace("\n", "").strip() + ";"
         print(f"Error extracting created date from {file_path}: {e}")
         return None
@@ -212,7 +215,7 @@ def update_exif_data_with_exiftool(file_path, metadata, error_directory, error_f
 
         return extension, modification_info
 
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+    except Exception as e:
         modification_info['exiftool-output'] += str(e).replace("\n", "").strip() + ";"
         print(f"Error updating metadata for {file_path}: {e}")
         if not os.path.exists(error_directory):
@@ -360,7 +363,7 @@ def process_directory(directory, report_number):
     report_timestamp = datetime.now().strftime(desired_datetime_format)
     os.makedirs(sidecar_directory := os.path.join(directory, "error-missing-sidecar"), exist_ok=True)
     processed_sidecars_directory = os.path.join(directory, "processed-sidecars")
-    error_renaming_directory = os.path.join(directory, "error-renaming")
+    os.makedirs(error_renaming_directory := os.path.join(directory, "error-renaming"), exist_ok=True)
     error_directory = os.path.join(directory, "processing-errors")
     success_directory = os.path.join(directory, "successfully-processed")
     missing_files = []
@@ -373,6 +376,20 @@ def process_directory(directory, report_number):
     matched_files = create_matched_file_list(files)
 
     for base_name, file_group in matched_files.items():
+
+        # Check that there base_name doesn't apply to too many files
+        if len(file_group['img']) > 2:
+            for img_file in file_group['img']:
+                file_path = os.path.join(directory, img_file)
+                shutil.move(file_path, os.path.join(error_renaming_directory, img_file))
+                error_renaming_files.append(file_path)
+
+            if file_group['json']:
+                json_file_path = os.path.join(directory, file_group['json'])
+                shutil.move(json_file_path, os.path.join(error_renaming_directory, file_group['json']))
+                error_renaming_files.append(json_file_path)
+            continue
+
         sidecar_path = None
         if file_group['json']:
             sidecar_path = os.path.join(directory, file_group['json'])
@@ -386,6 +403,7 @@ def process_directory(directory, report_number):
             continue
 
         modification_info_list = []
+
         for img_file in file_group['img']: # Loop through all files with the same base name
             file_path = os.path.join(directory, img_file)
 
